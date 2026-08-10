@@ -1,0 +1,20 @@
+# Secrets and machine-specific paths. Never commit this file.
+local.properties
+
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Signing
+*.jks
+*.keystore

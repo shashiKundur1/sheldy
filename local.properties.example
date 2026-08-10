@@ -1,0 +1,12 @@
+# Copy this file to local.properties and fill in what you need.
+# local.properties is gitignored, so nothing here ever reaches a commit.
+
+# Where your Android SDK lives. Android Studio writes this for you when you open the project.
+# sdk.dir=/Users/you/Library/Android/sdk
+
+# Optional. Only the AI companion chat uses this, everything else works without it.
+# Get a free key at https://aistudio.google.com/apikey
+# A real key starts with AIza. A value starting AQ. is a short lived token and will stop
+# working within the hour.
+# You can also skip this file entirely and paste a key in the app under Settings, Companion.
+# gemini.key=AIza...

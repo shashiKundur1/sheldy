@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sheldy</string>
+    <string name="acc_desc">Sheldy watches address bars and search boxes so blocked content never loads.</string>
+    <string name="widget_desc">Today&#8217;s thought and your day count.</string>
+</resources>
