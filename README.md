@@ -60,6 +60,8 @@ Prefer to build it yourself? [Skip to building](#build-it-yourself).
 | **Encrypted DNS** | DoT filtering, frozen so Settings cannot change it |
 | **Keyword watchdog** | Reads address bars and typed text, on device |
 | **Obfuscation folding** | `p0rn`, `p.o.r.n`, `poooorn`, `pr0n` all land on the same stem |
+| **Two-signal rule** | Ambiguous words need corroboration, so `naked eye` gets through |
+| **Trigger log** | Every block records the term it matched, readable in Diagnostics |
 | **Block screen** | 90 seconds, uncancellable, with breathing pacing |
 | **Screen scanning** | Optional heuristic inside image feeds, never uploaded |
 | **Greyscale** | Drains colour from every app on the phone |
@@ -77,7 +79,7 @@ Prefer to build it yourself? [Skip to building](#build-it-yourself).
 
 | | |
 |---|---|
-| **Day counter** | Starts at zero. Installing an app is not day one |
+| **Day counter** | Days since the last relapse. Logging one puts it back to zero |
 | **Calendar** | Clean, relapsed and missed days, all editable |
 | **Panic button** | One tap, 90 seconds, breathing pacer |
 | **19 badges** | Themed on the kings of ancient Greece, 91 tiers |
@@ -183,8 +185,10 @@ Everything worth changing sits in one obvious place.
 | What | Where | Default |
 |---|---|---|
 | DNS filter host | `Lockdown.kt` → `DNS_HOST` | `adult-filter-dns.cleanbrowsing.org` |
-| Blocked stems and words | `Watchdog.kt` → `STRONG` / `WEAK` | ~110 stems |
-| Never-block list | `Watchdog.kt` → `ALLOW` | recovery, medical, education |
+| Blocked stems | `Watchdog.kt` → `STRONG` | ~100 substring stems |
+| Blocked words | `Watchdog.kt` → `HARD` | whole-word only |
+| Needs a second signal | `Watchdog.kt` → `SOFT` / `CONTEXT` | ambiguous words |
+| Never-block lists | `Watchdog.kt` → `RESCUE` / `ALLOW` | recovery, medical, education |
 | Browsers to hide | `Lockdown.kt` → `HIDE` | 16 browsers plus Knox |
 | Unlock examples | `Semantics.kt` | 21 genuine, 8 hollow |
 | Emergency count and length | `Lock.kt` | 3 sessions, 5 minutes |
@@ -217,9 +221,12 @@ adb shell ping -c1 pornhub.com                         # should fail to resolve
 adb shell ping -c1 www.google.com                      # should resolve fine
 ```
 
-In the app, **Settings → Diagnostics** runs three self tests on the device: the keyword filter
-against evasion and false-positive cases, the lock window maths, and the sentence model against
-phrasings it has never seen. All three should read **PASS**.
+In the app, **Settings → Diagnostics** runs four self tests on the device: the keyword filter
+against evasion and false-positive cases, the lock window maths, the day counter across relapse
+and missed-day records, and the sentence model against phrasings it has never seen.
+
+Underneath them, **Recent filter triggers** lists the last thirty blocks with the exact term that
+matched. If something gets blocked that should not have, that screen names the word responsible.
 
 ---
 

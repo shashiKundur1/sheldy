@@ -457,8 +457,10 @@ class MainActivity : Activity() {
             })
         }
         val hh = heroHeader(R.drawable.hero_today, stamp, head, focusY = 0.62f, sub =
-            if (streak == 0) "A day counts once you finish it and say so."
-            else "Confirmed, one day at a time.")
+            // The counter is days since the last relapse, so day zero is the day it happened and
+            // tomorrow is day one. Say that plainly rather than describing the old confirm rule.
+            if (streak == 0) "Today is day zero. Tomorrow is day one."
+            else "Since the last reset, one day at a time.")
         p.addView(hh)
         if (isRefresh) counter.text = "$streak" else Anim.countTo(counter, streak)
 
@@ -2179,6 +2181,8 @@ class MainActivity : Activity() {
                 if (Filter.selfTest().contains("pass")) "PASS" else "FAIL"))
             addView(tableRow("Lock self-test",
                 if (Lock.selfTest().contains("pass")) "PASS" else "FAIL"))
+            addView(tableRow("Day counter self-test",
+                if (Store.selfTest().contains("pass")) "PASS" else "FAIL"))
             addView(tableRow("Clean days logged", "${Store.cleanDaysTotal(this@MainActivity)}"))
             addView(tableRow("Notes stored", "${Store.notes(this@MainActivity).size}", last = true))
             addView(gap(this@MainActivity, S3))
@@ -2198,6 +2202,32 @@ class MainActivity : Activity() {
             addView(out)
         })
         blocks.add(diag)
+
+        // --- what the filter actually fired on ---
+        //
+        // A false positive is only fixable if you can read back the term that caused it. Without
+        // this the only way to find out was to port the matcher to a laptop and run it over a
+        // dictionary, because logcat keeps a few minutes and the app kept only a count.
+        val trig = Store.triggers(this)
+        if (trig.isNotEmpty()) {
+            val tg = group("Recent filter triggers")
+            tg.addView(col(this).apply {
+                setPadding(dp(this@MainActivity, S5), dp(this@MainActivity, S3),
+                    dp(this@MainActivity, S5), dp(this@MainActivity, S4))
+                val fmt = java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.US)
+                trig.take(12).forEachIndexed { i, (at, term, text) ->
+                    addView(body(this@MainActivity, "${fmt.format(java.util.Date(at))}  ·  $term",
+                        Brand.T_EYEBROW, Brand.INK))
+                    addView(body(this@MainActivity, text, Brand.T_EYEBROW, Brand.INK_30))
+                    if (i < trig.take(12).size - 1) addView(gap(this@MainActivity, S2))
+                }
+                addView(gap(this@MainActivity, S3))
+                addView(ghost("CLEAR") {
+                    Store.clearTriggers(this@MainActivity); refresh()
+                })
+            })
+            blocks.add(tg)
+        }
 
         blocks.distinct().forEach { v ->
             if (v.parent == null) {

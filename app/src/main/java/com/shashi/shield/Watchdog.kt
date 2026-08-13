@@ -27,37 +27,83 @@ object Filter {
      * Folding handles: case, leetspeak (p0rn, pr0n, s3x, @, $), separators (p.o.r.n, p-o-r-n,
      * p o r n, p_o_r_n) and stretched letters (poooorn).
      */
-    private fun fold(s: String): String {
-        val sb = StringBuilder(s.length)
-        for (c in s.lowercase()) {
-            when (c) {
-                '0' -> sb.append('o'); '1' -> sb.append('i'); '3' -> sb.append('e')
-                '4' -> sb.append('a'); '5' -> sb.append('s'); '7' -> sb.append('t')
-                '8' -> sb.append('b'); '@' -> sb.append('a'); '$' -> sb.append('s')
-                '!' -> sb.append('i'); '|' -> sb.append('i')
-                else -> if (c.isLetterOrDigit()) sb.append(c)
-            }
-        }
-        return sb.toString()
+    /**
+     * Leetspeak, applied to letters only. Digits are handled separately, see [joined].
+     */
+    private fun deleet(c: Char): Char = when (c) {
+        '@' -> 'a'; '$' -> 's'; '!' -> 'i'; '|' -> 'i'
+        else -> c
     }
 
-    /** Same fold, but keeping word gaps, for the boundary-matched list. */
+    private fun deleetDigit(c: Char): Char = when (c) {
+        '0' -> 'o'; '1' -> 'i'; '3' -> 'e'; '4' -> 'a'
+        '5' -> 's'; '7' -> 't'; '8' -> 'b'
+        else -> c
+    }
+
+    /** Keeps word gaps, for the boundary-matched lists. Digits map, so "pr0n" reads as a word. */
     private fun foldSpaced(s: String): String {
         val sb = StringBuilder(s.length)
-        for (c in s.lowercase()) {
-            when (c) {
-                '0' -> sb.append('o'); '1' -> sb.append('i'); '3' -> sb.append('e')
-                '4' -> sb.append('a'); '5' -> sb.append('s'); '7' -> sb.append('t')
-                '8' -> sb.append('b'); '@' -> sb.append('a'); '$' -> sb.append('s')
-                '!' -> sb.append('i'); '|' -> sb.append('i')
-                else -> if (c.isLetterOrDigit()) sb.append(c) else sb.append(' ')
-            }
+        for (raw in s.lowercase()) {
+            val c = deleetDigit(deleet(raw))
+            sb.append(if (c.isLetterOrDigit()) c else ' ')
         }
         return sb.toString()
     }
 
-    /** Collapse stretched letters: poooorn -> porn. Kept separate so xxx survives intact. */
-    private val RUNS = Regex("(.)\\1+")
+    /**
+     * The de-spaced form the stems are matched against, and the single most delicate thing here.
+     *
+     * Deleting every separator catches "p.o.r.n" and "p o r n", but it also welds neighbouring
+     * words together, and a stem that spans the seam blocks a sentence nobody would object to.
+     * Measured against a 235,976-word dictionary, 83 of the 111 stems could be produced by an
+     * innocent pair of words: "watch anime" made "hanime", "scam soda" made "camsoda", "wealth
+     * clips" made "hclips", "mother less" made "motherless".
+     *
+     * So gaps close only where obfuscation actually puts them. Spelling a word out leaves runs of
+     * one- and two-character fragments, and ordinary prose does not, so two tokens are welded only
+     * when one of them is short. "p o r n" and "x videos" still fold shut; "watch anime" does not.
+     */
+    private fun joined(s: String): List<String> {
+        val tokens = foldSpaced(s).split(' ').filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return emptyList()
+        val out = mutableListOf<String>()
+        val run = StringBuilder(tokens[0])
+        for (i in 1 until tokens.size) {
+            if (tokens[i - 1].length <= 2 || tokens[i].length <= 2) run.append(tokens[i])
+            else { out.add(run.toString()); run.setLength(0); run.append(tokens[i]) }
+        }
+        out.add(run.toString())
+        return out
+    }
+
+    /** Digits left alone, so a brand that contains one ("cam4", "rule34") stays literal. */
+    private fun joinedRaw(s: String): List<String> {
+        val sb = StringBuilder(s.length)
+        for (raw in s.lowercase()) {
+            val c = deleet(raw)
+            sb.append(if (c.isLetterOrDigit()) c else ' ')
+        }
+        val tokens = sb.toString().split(' ').filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return emptyList()
+        val out = mutableListOf<String>()
+        val run = StringBuilder(tokens[0])
+        for (i in 1 until tokens.size) {
+            if (tokens[i - 1].length <= 2 || tokens[i].length <= 2) run.append(tokens[i])
+            else { out.add(run.toString()); run.setLength(0); run.append(tokens[i]) }
+        }
+        out.add(run.toString())
+        return out
+    }
+
+    /**
+     * Collapse stretched letters: poooorn -> porn.
+     *
+     * Runs of three or more only. The old rule collapsed doubles too, which quietly rewrote every
+     * ordinary double letter in the language: "poorness" became "porness" and was blocked as porn.
+     * Nobody stretches a letter to exactly two, that is just how English spells things.
+     */
+    private val RUNS = Regex("(.)\\1{2,}")
     private fun squash(s: String) = RUNS.replace(s) { it.groupValues[1] }
 
     /**
@@ -72,42 +118,76 @@ object Filter {
         // "hardcore"/"softcore" were here and had to go: hardcore Minecraft, hardcore gaming,
         // hardcore workout. Substring-matched, so they poisoned ordinary YouTube searches while
         // adding nothing, every site they described is already named below.
-        "bukkake", "fisting", "bdsm", "erotica", "smut", "fapp",
-        "jerkoff", "masturbat", "orgasm", "orgy", "swinger", "incest", "upskirt", "voyeur",
+        "bukkake", "fisting", "bdsm", "fapp",
+        "jerkoff", "masturbat", "upskirt",
         "stripcam", "escortservice",
         // tube and cam brands seen most in the blocklist
         "xvideo", "xnxx", "xhamster", "pornhub", "redtube", "youporn", "youjizz", "tnaflix",
-        "spankbang", "eporner", "motherless", "chaturbate", "bongacams", "stripchat", "camsoda",
-        "myfreecams", "livejasmin", "cam4", "erome", "vlxx", "txxx", "upornia", "hclips",
+        "spankbang", "chaturbate", "bongacams", "stripchat", "camsoda",
+        "myfreecams", "livejasmin", "cam4", "vlxx", "txxx", "upornia", "hclips",
         "hotmovs", "drtuber", "sunporno", "hqporner", "sxyprn", "daftsex", "porntrex",
         "pornone", "porngo", "porn300", "brazzers", "bangbros", "realitykings", "naughtyamerica",
-        "mofos", "digitalplayground", "evilangel", "teamskeet", "nubiles", "twistys", "dorcel",
+        "mofos", "digitalplayground", "evilangel", "teamskeet", "twistys",
         "onlyfans", "fansly", "manyvids", "clips4sale", "justforfans",
         // leak and aggregator ecosystems
         "thothub", "coomer", "kemono", "fapello", "leakedzone", "nudostar", "dirtyship",
-        "simpcity", "influencersgonewild", "gonewild", "imagefap", "imagetwist", "sexart",
+        "simpcity", "influencersgonewild", "gonewild", "imagefap", "imagetwist",
         // anime / manga adult
-        "rule34", "booru", "doujin", "nhentai", "hanime", "javhd", "javbus", "javlibrary",
-        "missav", "sukebei", "ecchi"
+        "rule34", "gelbooru", "danbooru", "safebooru", "doujin", "nhentai", "javhd", "javbus",
+        "javlibrary", "missav", "sukebei",
+        // Spelled with the TLD on purpose. "motherless" on its own is an ordinary English word,
+        // and as a stem it blocked "sometimes i feel like a motherless child lyrics". Only the
+        // domain form is matched here; the DNS layer covers the site itself.
+        "motherlesscom"
     )
 
     /**
-     * Boundary-matched, because each is a substring of something innocent:
-     * jav/java, nude/denude, milf/milfoil, escort/escorted, tits/titsanity, anal/analysis,
-     * cum/cumulative, ass/assignment, sex/Sussex. These need whole-word matches or the filter
-     * becomes unusable within a day.
+     * Whole-word matches. Two reasons a term lands here rather than in STRONG.
+     *
+     * Some are a substring of something innocent: jav/java, nude/denude, milf/milfoil,
+     * escort/escorted, anal/analysis, cum/cumulative, sex/Sussex.
+     *
+     * The rest were in STRONG and were caught blocking real English. Scanned against a dictionary:
+     * "smut" blocked bismuth, "erome" blocked accelerometer, "erotica" blocked sclerotica, "orgy"
+     * blocked porgy, "swinger" blocked inswinger, "booru" blocked zumbooruk, "ecchi" blocked
+     * zecchino. A whole-word rule keeps every one of them and loses nothing real.
      */
-    private val WEAK = listOf(
-        // "pron"/"prn" are boundary-matched, not substrings: "pron" sits inside "pronounce",
-        // "pronoun" and "prone". Folded input means "pr0n hd" still lands here.
-        "pron", "prn",
-        "nude", "nudes", "nudity", "naked", "milf", "escort", "erotic", "fetish", "kink",
-        "boobs", "tits", "titties", "anal", "cum", "jav", "sexting", "r34", "nsfl",
-        // Dropped: "strip"/"stripper" (comic strip, LED strip, wire stripper, paint stripper) and
-        // "hook up" (hook up a subwoofer). stripcam/stripchat in STRONG cover the real ones.
-        "sex", "sexy", "sexual", "horny", "slut", "whore", "lewd",
-        "cam girl", "sex video", "sex videos", "sex tape", "adult video", "adult movie",
-        "adult film", "leaked nudes", "nude pics", "nude photos", "only fans"
+    private val HARD = listOf(
+        // "pron"/"prn" sit inside "pronounce", "pronoun" and "prone". Folded input means
+        // "pr0n hd" still lands here.
+        // "r34" cannot go here: the fold maps digits to letters, so it would arrive as "rea".
+        // rule34 and the booru brands in STRONG cover it, matched with digits left literal.
+        "pron", "prn", "nsfl",
+        "milf", "milfs", "slut", "sluts", "whore", "whores", "nudes", "sexting", "smut",
+        "erotica", "orgy", "orgies", "orgasm", "orgasms", "swinger", "swingers", "voyeur",
+        "incest", "booru", "ecchi", "hanime", "erome", "nubiles", "dorcel", "sexart",
+        "camgirls", "escorts"
+    )
+
+    /**
+     * Ambiguous on their own, so one of these alone is not enough. Every single one has a life
+     * outside porn: the naked eye, a kink in the hose, cum laude, same-sex marriage, anal fissure,
+     * a horny toad, Sexy Back. Blocking on any one of them is most of what made the filter feel
+     * arbitrary, because the words turn up constantly and the sentences around them are innocent.
+     *
+     * Two signals are required, see [hit]. Dropped entirely: "strip"/"stripper" (comic strip, LED
+     * strip, wire stripper) and "hook up" (hook up a subwoofer).
+     */
+    private val SOFT = listOf(
+        "nude", "nudity", "naked", "escort", "erotic", "fetish", "kink", "kinky",
+        "boobs", "tits", "titties", "anal", "cum", "jav", "sex", "sexy", "sexual",
+        "horny", "lewd", "hookup", "camming"
+    )
+
+    /**
+     * The second signal. Deliberately shaped like porn rather than like the internet: "free",
+     * "watch", "hot", "best" and "download" were considered and left out, because "best naked eye
+     * telescope" is a real search and it has to survive.
+     */
+    private val CONTEXT = listOf(
+        "video", "videos", "vid", "vids", "hd", "xxx", "pic", "pics", "photo", "photos",
+        "gif", "gifs", "clip", "clips", "tube", "webcam", "cam", "cams", "stream", "leaked",
+        "teen", "teens", "milf", "onlyfans", "nsfw"
     )
 
     /**
@@ -143,45 +223,92 @@ object Filter {
     )
 
     /**
-     * Looking for help must never be blocked, and neither must ordinary life. This wins over both
-     * lists above, which is why bare "sex" can safely sit in WEAK: sex education, sexual health
-     * and sexuality all land here first.
+     * Looking for help must never be blocked. This wins over every list, including STRONG, so
+     * "how to quit porn addiction" reaches the search engine even though "porn" is in it.
+     *
+     * Whole words, not substrings. As substrings these were a hole straight through the filter:
+     * "quit" sits inside "quite", so any sentence containing the word "quite" switched the entire
+     * filter off. Every stem here is spelled out in the forms it actually appears in instead.
+     */
+    private val RESCUE = listOf(
+        "addiction", "addictions", "addicted", "addict", "recovery", "recovering", "recover",
+        "nofap", "quit", "quitting", "rehab", "therapy", "therapist", "therapists",
+        "counselling", "counseling", "counsellor", "counselor", "relapse", "relapsed",
+        "relapsing", "abstain", "abstinence", "sobriety", "sober", "support group",
+        "help me", "stop watching", "how to stop", "blocker", "blocking app"
+    )
+
+    /**
+     * Ordinary life that happens to use the ambiguous words. Overrides HARD and SOFT but not
+     * STRONG, so sexual health and sex education stay reachable while a tube-site name in the
+     * same sentence still blocks. Bare "sex" can sit in SOFT because these land first.
      */
     private val ALLOW = listOf(
-        "addiction", "recovery", "recover", "nofap", "quit", "quitting", "stop watching",
-        "rehab", "therapy", "therapist", "counsel", "relapse", "abstain", "sobriety",
-        "support group", "help me", "sex education", "sexual health", "sexuality",
-        "safe sex", "sexually transmitted", "sex ed", "reproduction", "puberty", "consent",
-        "gender", "harassment", "assault", "abuse", "trafficking", "sexism", "biology",
-        "anatomy", "medical", "doctor", "clinic", "hospital", "pregnan", "contracept"
+        "sex education", "sex ed", "sexual health", "sexuality", "safe sex",
+        "sexually transmitted", "reproduction", "reproductive", "puberty", "consent",
+        "gender", "harassment", "assault", "abuse", "trafficking", "sexism",
+        "biology", "anatomy", "medical", "medicine", "doctor", "clinic", "hospital",
+        "pregnancy", "pregnant", "contraception", "contraceptive", "fissure", "symptoms"
     )
 
-    private val STRONG_SET = STRONG.map { fold(it) }
-    private val BYPASS_SET = BYPASS.map { fold(it) }
-    private val WEAK_RE = Regex(
-        WEAK.joinToString("|") { """\b${Regex.escape(it)}\b""" }, RegexOption.IGNORE_CASE
+    private val STRONG_SET = STRONG.map { it.filter { c -> c.isLetterOrDigit() } }
+    private val BYPASS_SET = BYPASS.map { it.filter { c -> c.isLetterOrDigit() } }
+    private fun word(list: List<String>) = Regex(
+        list.joinToString("|") { """\b${Regex.escape(it)}\b""" }, RegexOption.IGNORE_CASE
     )
-    private val ALLOW_RE = Regex(
-        ALLOW.joinToString("|") { Regex.escape(it) }, RegexOption.IGNORE_CASE
-    )
+    private val HARD_RE = word(HARD)
+    private val SOFT_RE = word(SOFT)
+    private val CONTEXT_RE = word(CONTEXT)
+    private val RESCUE_RE = word(RESCUE)
+    private val ALLOW_RE = word(ALLOW)
 
-    fun hit(s: String?): Boolean {
-        if (s == null || s.length < 3) return false
+    /** Every separator gone. Only the long bypass phrases are matched against this. */
+    private fun compactAll(s: String) = foldSpaced(s).filter { !it.isWhitespace() }
+
+    /** The strings a stem may be matched against, plus their stretch-collapsed forms. */
+    private fun candidates(s: String): List<String> {
+        val out = joined(s) + joinedRaw(s)
+        // A string with no whitespace is a URL or a single token, so closing every gap in it is
+        // safe: there are no neighbouring words to weld together. This is what keeps whole-domain
+        // stems like "motherless.com" matchable without putting "motherless" back in the word list.
+        val whole = if (s.none { it.isWhitespace() }) listOf(compactAll(s), s.lowercase()
+            .filter { it.isLetterOrDigit() }) else emptyList()
+        return (out + whole).flatMap { listOf(it, squash(it)) }
+    }
+
+    fun hit(s: String?): Boolean = match(s) != null
+
+    /**
+     * The matched term, or null. Returning it rather than a boolean is what makes a false positive
+     * diagnosable: the block screen and the trigger log both name the exact term that fired, so
+     * "it blocked my search and I do not know why" stops being possible.
+     */
+    fun match(s: String?): String? {
+        if (s == null || s.length < 3) return null
 
         val spaced = foldSpaced(s)
-        if (ALLOW_RE.containsMatchIn(spaced) || ALLOW_RE.containsMatchIn(s)) return false
+        if (RESCUE_RE.containsMatchIn(spaced)) return null
 
-        // Substring match against both the plain fold and the stretch-collapsed fold, so
-        // "p.o.r.n", "p0rn" and "poooorn" all land on the same stem.
-        val compact = fold(s)
-        val squashed = squash(compact)
-        if (STRONG_SET.any { compact.contains(it) || squashed.contains(it) }) return true
+        val cands = candidates(s)
+        for (stem in STRONG_SET) if (cands.any { it.contains(stem) }) return stem
 
-        // Circumvention searches. Checked against the fold with separators stripped, so
-        // "remove device owner", "remove-device-owner" and "removedeviceowner" are one thing.
-        if (BYPASS_SET.any { compact.contains(it) }) return true
+        // Circumvention searches. Every one is a long distinctive phrase, so these alone are
+        // matched with all separators closed: "remove device owner", "remove-device-owner" and
+        // "removedeviceowner" are one thing, and nothing innocent is ten characters from them.
+        val flat = compactAll(s)
+        for (stem in BYPASS_SET) if (flat.contains(stem)) return stem
 
-        return WEAK_RE.containsMatchIn(spaced)
+        if (ALLOW_RE.containsMatchIn(spaced)) return null
+
+        HARD_RE.find(spaced)?.let { return it.value }
+
+        // Ambiguous words need corroboration: a second ambiguous word, or a word that only shows
+        // up around porn. One on its own is how "naked eye" and "cum laude" used to get blocked.
+        val soft = SOFT_RE.findAll(spaced).map { it.value }.distinct().toList()
+        if (soft.isEmpty()) return null
+        if (soft.size >= 2) return soft.take(2).joinToString("+")
+        CONTEXT_RE.find(spaced)?.let { return soft[0] + "+" + it.value }
+        return null
     }
 
     /** ponytail: one runnable check. Includes the evasion cases, not just the easy ones. */
@@ -202,9 +329,16 @@ object Filter {
             "rule34" to true,
             "nhentai" to true,
             "best nude photos" to true,
-            "she is so horny" to true,
             "chaturbate" to true,
             "porno365" to true,
+            "motherless.com" to true,
+            "rule 34" to true,
+            "cam4" to true,
+            // ambiguous words, blocked when a second signal agrees
+            "naked teen pics" to true,
+            "sexy webcam" to true,
+            "nude photos leaked" to true,
+            "horny sexy" to true,
             // circumvention, narrowed to taking the app off the phone
             "how to remove device owner android" to true,
             "remove-device-owner" to true,
@@ -229,7 +363,38 @@ object Filter {
             "sussex university" to false,
             "cumulative total" to false,
             "analysis of results" to false,
-            "ab" to false
+            "ab" to false,
+            // every one of these blocked before, found by running the matcher over a dictionary
+            "watch anime" to false,                 // "hanime" spanned the gap between the words
+            "bismuth crystal" to false,             // "smut"
+            "accelerometer calibration" to false,   // "erome"
+            "chevrolet camaro price" to false,      // "cam4" folded to "cama"
+            "poorness meaning" to false,            // doubled letter collapsed into "porn"
+            "inswinger cricket" to false,           // "swinger"
+            "sclerotica of the eye" to false,       // "erotica"
+            "porgy fish recipe" to false,           // "orgy"
+            "sometimes i feel like a motherless child lyrics" to false,
+            "gopalan institute llc" to false,
+            "reality kingship succession" to false,
+            "my mother less worried now" to false,
+            "wealth clips youtube" to false,
+            "dirty shipping container" to false,
+            "scam soda advert" to false,
+            // ambiguous words on their own are ordinary English
+            "naked eye telescope" to false,
+            "kink in the hose" to false,
+            "cum laude meaning" to false,
+            "same sex marriage law" to false,
+            "anal fissure symptoms" to false,
+            "horny toad lizard" to false,
+            // Deliberate: one ambiguous word is no longer enough on its own. "she is so horny"
+            // used to block here. The stems and the domain layer carry the actual porn, and a
+            // filter that fires on a single common word is one you stop believing.
+            "she is so horny" to false,
+            "sexy back justin timberlake" to false,
+            "escort service to the airport" to false,
+            // "quit" was a substring, so the word "quite" switched the whole filter off
+            "quite a good pornhub alternative" to true
         )
         val bad = cases.filter { hit(it.first) != it.second }
         return if (bad.isEmpty()) "Filter self-test: ${cases.size}/${cases.size} pass"
@@ -304,9 +469,17 @@ class Watchdog : AccessibilityService() {
         if (overlay != null) return   // already blocking, stop scanning
 
         // Cheap path: typed text arrives here keystroke by keystroke, before search is submitted.
-        for (t in e.text) {
-            val s = t?.toString() ?: continue
-            if (Filter.hit(s)) { block(s); return }
+        //
+        // Only text you actually typed. This used to read e.text on every event type, and the
+        // service subscribes to typeWindowContentChanged, so "what you type" quietly became "any
+        // string any app redraws": video titles, search suggestions, comments, notification text,
+        // song lyrics. The file header promised address bars and typed text and the code did not
+        // keep that promise, which is why blocks arrived with no relation to what was on screen.
+        if (e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+            for (t in e.text) {
+                val s = t?.toString() ?: continue
+                Filter.match(s)?.let { block(s, it); return }
+            }
         }
 
         // A lock starting or a grant running out has to bite within seconds, not at the next
@@ -346,7 +519,7 @@ class Watchdog : AccessibilityService() {
         for (id in URL_BARS) {
             for (n in root.findAccessibilityNodeInfosByViewId(id).orEmpty()) {
                 val url = n.text?.toString() ?: continue
-                if (Filter.hit(url)) { block(url); return }
+                Filter.match(url)?.let { block(url, it); return }
             }
         }
     }
@@ -382,10 +555,12 @@ class Watchdog : AccessibilityService() {
         for (i in 0 until n.childCount) collect(n.getChild(i), out, depth + 1)
     }
 
-    private fun block(reason: String) {
-        // Diagnostic: log exactly what tripped the filter, so a false positive can be traced to
-        // the term that caused it instead of guessed at.
-        android.util.Log.i("SheldyFilter", "BLOCK matched on: >>>${reason.take(300)}<<<")
+    private fun block(reason: String, term: String) {
+        // Keep it, do not just log it. logcat is a ring buffer a few minutes deep, so by the time
+        // anyone says "it blocked me and I do not know why" the evidence is long gone. Settings,
+        // Diagnostics reads this back.
+        runCatching { Store.logTrigger(this, term, reason) }
+        android.util.Log.i("SheldyFilter", "BLOCK on '$term' in: >>>${reason.take(300)}<<<")
         val now = System.currentTimeMillis()
         if (now - lastBlock < 4000) return   // one intervention per attempt, not per keystroke
         lastBlock = now

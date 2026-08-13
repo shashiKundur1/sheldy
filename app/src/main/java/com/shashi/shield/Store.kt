@@ -27,10 +27,12 @@ object Day {
 /**
  * All local state. SharedPreferences, not a database: a few hundred short strings on one device.
  *
- * The counting model matters more than the storage. **You start on day 0.** A day is only earned
- * by finishing it and confirming it, checking in tomorrow evening is what turns today into a
- * completed clean day. This is deliberate: a counter that hands you "day 1" for installing an app
- * is measuring the install, not the effort.
+ * The counting model matters more than the storage. **You start on day 0.** The counter is days
+ * since the last relapse, so a fresh install reads 0 rather than handing you "day 1" for
+ * installing an app, and logging a relapse puts it straight back to 0 the moment you admit it.
+ *
+ * Confirming a day still matters, it fills the calendar, feeds the badges and closes the
+ * missed-day prompts, but it no longer gates the counter. Forgetting to check in is not a relapse.
  */
 object Store {
 
@@ -39,6 +41,7 @@ object Store {
     private const val K_NOTES = "notes"
     private const val K_PANIC = "panic_events"
     private const val K_BLOCKS = "block_events"
+    private const val K_TRIGGERS = "filter_triggers"   // what the keyword filter actually fired on
     private const val K_FIRST = "first_run"
     private const val K_PLEDGE = "pledge_signed"
     private const val K_REMIND = "reminders_on"
@@ -117,20 +120,34 @@ object Store {
     }
 
     /**
-     * Consecutive confirmed clean days. Today never counts until it is confirmed, so a fresh
-     * install reads 0 and stays 0 until you finish a day and say so.
+     * Days since the last relapse. The relapse day itself is 0 and the next day is 1.
+     *
+     * This used to count backwards over *confirmed* clean days, which got the one moment that
+     * matters wrong: logging a relapse today left the counter showing yesterday's total, because
+     * the walk stepped over today and carried on down the clean days behind it. The number you
+     * looked at right after admitting a relapse was the number you had before it.
+     *
+     * A day nobody confirmed no longer breaks the count either. Forgetting to check in is not a
+     * relapse, and a clock that resets because you were asleep teaches you to distrust the clock.
+     * Confirmation still drives the calendar, the badges and the missed-day prompts, it just no
+     * longer decides this one number. Only [logRelapse] resets it.
      */
-    fun streak(ctx: Context): Int {
-        val d = days(ctx)
-        val cal = Calendar.getInstance()
-        // Today only counts if explicitly confirmed; otherwise start counting at yesterday.
-        if (d.optString(keyOf(cal)) != Day.CLEAN) cal.add(Calendar.DAY_OF_YEAR, -1)
-        var n = 0
-        while (d.optString(keyOf(cal)) == Day.CLEAN) {
-            n++
-            cal.add(Calendar.DAY_OF_YEAR, -1)
-        }
-        return n
+    fun streak(ctx: Context): Int = countSince(days(ctx), firstRun(ctx), todayKey())
+
+    /** Pure, so [selfTest] can check tomorrow without moving the phone's clock. */
+    fun countSince(d: JSONObject, first: String, today: String): Int {
+        val last = d.keys().asSequence()
+            .filter { d.optString(it) == Day.RELAPSE && it <= today }
+            .maxOrNull()
+        return daysBetween(last ?: first, today)
+    }
+
+    /** Whole days from [from] to [to], both "yyyy-MM-dd". Negative spans clamp to 0. */
+    private fun daysBetween(from: String, to: String): Int {
+        val a = runCatching { KEY_FMT.parse(from)!! }.getOrNull() ?: return 0
+        val b = runCatching { KEY_FMT.parse(to)!! }.getOrNull() ?: return 0
+        // Round rather than truncate: a DST change makes one of these 23 or 25 hours long.
+        return Math.round((b.time - a.time) / 86_400_000.0).toInt().coerceAtLeast(0)
     }
 
     /** True when yesterday finished without being confirmed or logged, the nightly prompt. */
@@ -144,9 +161,9 @@ object Store {
     /**
      * Finished days since you started that were never confirmed either way, newest first.
      *
-     * A day you forgot to close should not silently become a hole in the record, it breaks the
-     * streak and there is nowhere to say what actually happened. These surface at the top of
-     * Today so the gap can be filled in.
+     * A day you forgot to close should not silently become a hole in the record. It no longer
+     * breaks the counter, but the calendar still has nothing to show and there is nowhere to say
+     * what actually happened. These surface at the top of Today so the gap can be filled in.
      */
     fun missedDays(ctx: Context, limit: Int = 14): List<String> {
         val d = days(ctx)
@@ -380,17 +397,23 @@ object Store {
         return d.keys().asSequence().count { d.optString(it) == Day.RELAPSE }
     }
 
-    fun bestStreak(ctx: Context): Int {
-        val d = days(ctx)
-        val keys = d.keys().asSequence().filter { d.optString(it) == Day.CLEAN }.sorted().toList()
-        if (keys.isEmpty()) return 0
-        var best = 1; var run = 1
-        for (i in 1 until keys.size) {
-            val prev = Calendar.getInstance().apply {
-                time = KEY_FMT.parse(keys[i])!!; add(Calendar.DAY_OF_YEAR, -1)
-            }
-            run = if (keyOf(prev) == keys[i - 1]) run + 1 else 1
+    /**
+     * The highest [streak] ever reached. Replayed day by day rather than derived from the gaps
+     * between relapses: a gap of five days peaks at four, because the closing relapse is itself a
+     * zero, and that off-by-one is far easier to get wrong in arithmetic than in a loop.
+     */
+    fun bestStreak(ctx: Context): Int = bestSince(days(ctx), firstRun(ctx), todayKey())
+
+    fun bestSince(d: JSONObject, first: String, today: String): Int {
+        val cal = Calendar.getInstance().apply {
+            time = runCatching { KEY_FMT.parse(first)!! }.getOrDefault(Date())
+        }
+        // Starts at -1 so the very first day lands on 0, matching "you start on day 0".
+        var best = 0; var run = -1
+        while (keyOf(cal) <= today) {
+            run = if (d.optString(keyOf(cal)) == Day.RELAPSE) 0 else run + 1
             if (run > best) best = run
+            cal.add(Calendar.DAY_OF_YEAR, 1)
         }
         return best
     }
@@ -419,6 +442,87 @@ object Store {
 
     private fun rawNotes(ctx: Context): JSONArray =
         runCatching { JSONArray(sp(ctx).getString(K_NOTES, "[]")) }.getOrDefault(JSONArray())
+
+    // ---- filter triggers ---------------------------------------------------
+
+    /**
+     * What the keyword filter fired on, kept so a false positive can be read back instead of
+     * reconstructed. Every block records the exact term that matched and the text it matched in.
+     *
+     * This exists because the first round of false positives had to be found by porting the
+     * matcher to a laptop and running it over a dictionary: logcat had already rotated, and the
+     * app counted blocks without recording one word of what caused them. Thirty is plenty, this
+     * is for reading the last few days, not for keeping a history.
+     */
+    fun logTrigger(ctx: Context, term: String, text: String) {
+        val arr = runCatching { JSONArray(sp(ctx).getString(K_TRIGGERS, "[]")) }
+            .getOrDefault(JSONArray())
+        arr.put(JSONObject().apply {
+            put("at", System.currentTimeMillis())
+            put("term", term)
+            put("text", text.take(160))
+        })
+        while (arr.length() > 30) arr.remove(0)
+        sp(ctx).edit().putString(K_TRIGGERS, arr.toString()).apply()
+    }
+
+    /** Newest first, for Diagnostics. */
+    fun triggers(ctx: Context): List<Triple<Long, String, String>> {
+        val arr = runCatching { JSONArray(sp(ctx).getString(K_TRIGGERS, "[]")) }
+            .getOrDefault(JSONArray())
+        return (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            Triple(o.optLong("at"), o.optString("term"), o.optString("text"))
+        }.sortedByDescending { it.first }
+    }
+
+    fun clearTriggers(ctx: Context) = sp(ctx).edit().remove(K_TRIGGERS).apply()
+
+    /**
+     * ponytail: one runnable check for the day counter.
+     *
+     * Written against fixed dates rather than the real clock, so "what does it say tomorrow" is
+     * answerable now instead of after midnight, and without moving the phone's date, which would
+     * write day records under the wrong key.
+     */
+    fun selfTest(): String {
+        fun m(vararg p: Pair<String, String>) = JSONObject().apply { p.forEach { put(it.first, it.second) } }
+        val fails = mutableListOf<String>()
+        fun check(name: String, got: Int, want: Int) {
+            if (got != want) fails.add("$name: got $got want $want")
+        }
+
+        // The real record on the day this was written: relapse on the 8th, four clean days, then
+        // a relapse today. The old counter read 4 here, which is the bug that prompted all this.
+        val real = m("2026-08-08" to Day.RELAPSE, "2026-08-09" to Day.CLEAN,
+            "2026-08-10" to Day.CLEAN, "2026-08-11" to Day.CLEAN,
+            "2026-08-12" to Day.CLEAN, "2026-08-13" to Day.RELAPSE)
+        check("relapse day is zero", countSince(real, "2026-08-08", "2026-08-13"), 0)
+        check("day after relapse is one", countSince(real, "2026-08-08", "2026-08-14"), 1)
+        check("and then two", countSince(real, "2026-08-08", "2026-08-15"), 2)
+        check("best run was four", bestSince(real, "2026-08-08", "2026-08-13"), 4)
+
+        // A fresh install reads 0 on the day you install it, not 1.
+        val fresh = JSONObject()
+        check("install day is zero", countSince(fresh, "2026-08-13", "2026-08-13"), 0)
+        check("no relapse yet just counts", countSince(fresh, "2026-08-01", "2026-08-13"), 12)
+        check("best with no relapse", bestSince(fresh, "2026-08-01", "2026-08-13"), 12)
+
+        // An unconfirmed day is not a relapse and must not reset anything.
+        val gap = m("2026-08-01" to Day.RELAPSE, "2026-08-02" to Day.CLEAN)
+        check("missed days do not reset", countSince(gap, "2026-08-01", "2026-08-13"), 12)
+
+        // A relapse logged on a past date moves the counter to that date, not to today.
+        val back = m("2026-08-10" to Day.RELAPSE)
+        check("backdated relapse", countSince(back, "2026-08-01", "2026-08-13"), 3)
+
+        // A future-dated record must never be counted as the last relapse.
+        val future = m("2026-08-10" to Day.RELAPSE, "2026-09-01" to Day.RELAPSE)
+        check("future record ignored", countSince(future, "2026-08-01", "2026-08-13"), 3)
+
+        return if (fails.isEmpty()) "Day counter self-test: 9/9 pass"
+        else "Day counter self-test FAILED: " + fails.joinToString("; ")
+    }
 
     // ---- counters ----------------------------------------------------------
 
