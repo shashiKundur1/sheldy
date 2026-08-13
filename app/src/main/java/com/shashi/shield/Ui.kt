@@ -1624,8 +1624,29 @@ class MainActivity : Activity() {
         body.addView(primary("Share the collection") { shareCollection() })
         body.addView(gap(this, S6))
 
+        // Held badges first, then the rest. Declaration order put a locked king above one you had
+        // actually earned, so the thing you came to look at was never at the top.
+        //
+        // Held sort by tier, best first. Locked sort by how close they are, so the next one within
+        // reach leads that section rather than whichever happens to be defined first.
+        val (heldBadges, lockedBadges) = Achievements.ALL.partition { it.tier(this) > 0 }
+        val ordered = heldBadges.sortedWith(
+            compareByDescending<Badge> { it.tier(this) }.thenByDescending { it.fraction(this) }
+        ) + lockedBadges.sortedByDescending { it.fraction(this) }
+
         val rows = mutableListOf<View>()
-        Achievements.ALL.forEach { b ->
+        var headed = false
+        ordered.forEachIndexed { i, b ->
+            if (i == 0 && heldBadges.isNotEmpty()) {
+                body.addView(eyebrow(this, "HELD  ·  ${heldBadges.size}", Brand.INK_45))
+                body.addView(gap(this, S3))
+            }
+            if (!headed && b.tier(this) == 0 && heldBadges.isNotEmpty()) {
+                headed = true
+                body.addView(gap(this, S4))
+                body.addView(eyebrow(this, "STILL TO EARN  ·  ${lockedBadges.size}", Brand.INK_45))
+                body.addView(gap(this, S3))
+            }
             val c = card(this)
             c.addView(badgeRow(b) { sub = "badge:${b.id}"; show(3) })
             rows.add(c)
