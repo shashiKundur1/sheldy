@@ -265,14 +265,30 @@ object Filter {
     /** Every separator gone. Only the long bypass phrases are matched against this. */
     private fun compactAll(s: String) = foldSpaced(s).filter { !it.isWhitespace() }
 
+    /**
+     * Structural URL punctuation. Letters either side of one of these are never the same word,
+     * so the whole-string compaction below must not weld across them.
+     *
+     * Deliberately excludes "+" and ".": "+" is an encoded space, so "gang+bang" SHOULD weld into
+     * "gangbang", and "." keeps whole-domain stems like "motherless.com" matchable.
+     */
+    private val URL_DELIM = Regex("""[/?&=#:]+""")
+
     /** The strings a stem may be matched against, plus their stretch-collapsed forms. */
     private fun candidates(s: String): List<String> {
         val out = joined(s) + joinedRaw(s)
-        // A string with no whitespace is a URL or a single token, so closing every gap in it is
-        // safe: there are no neighbouring words to weld together. This is what keeps whole-domain
-        // stems like "motherless.com" matchable without putting "motherless" back in the word list.
-        val whole = if (s.none { it.isWhitespace() }) listOf(compactAll(s), s.lowercase()
-            .filter { it.isLetterOrDigit() }) else emptyList()
+        // A string with no whitespace is a URL or a single token, so closing the gaps in it is
+        // safe WITHIN one segment. Across segments it is not, and that was a real bug: every
+        // Google result URL carries "&sxsrf=APpeQ...", and welding over the "=" produced
+        // "sxsrfappeq", which contains the stem "fapp". That single collision was 21 of the
+        // first 25 blocks this filter ever made, on searches like "3.5 mm jack earphone".
+        val whole = if (s.none { it.isWhitespace() })
+            URL_DELIM.split(s)
+                .filter { it.length >= 3 }
+                .flatMap { seg ->
+                    listOf(compactAll(seg), seg.lowercase().filter { c -> c.isLetterOrDigit() })
+                }
+        else emptyList()
         return (out + whole).flatMap { listOf(it, squash(it)) }
     }
 
@@ -394,7 +410,18 @@ object Filter {
             "sexy back justin timberlake" to false,
             "escort service to the airport" to false,
             // "quit" was a substring, so the word "quite" switched the whole filter off
-            "quite a good pornhub alternative" to true
+            "quite a good pornhub alternative" to true,
+            // Google result URLs. Every one of these blocked, and every one is innocent:
+            // "&sxsrf=APpeQ" compacted to "sxsrfappeq" and hit "fapp".
+            "google.com/search?q=3.5+mm+jack+earphone&client=ms-android-samsung-ss&hs=jMAB&sca_esv=033ed164c9068bb8&sxsrf=APpeQnttxUWRx2y_C-QHtRcmP_hnu-B0iA%3A1787505844433&" to false,
+            "google.com/search?q=fanta+prounounce&client=ms-android-samsung-ss&hs=XRoV&sca_esv=b0c671fd83345bc7&sxsrf=APpeQnv6d56S49B_QBO9SSDCTQbTLtlmJA%3A1787216320516&ei=w" to false,
+            "google.com/search?q=judge+my+singing+voice+online+free&client=ms-android-samsung-ss&hs=BUXq&sca_esv=00bec31ec014c545&sxsrf=APpeQnt9c7xI7XqYARn3cWAjhMJzgSBcTw%3A" to false,
+            "google.com/search?q=careworkerfinder.com.au&client=ms-android-samsung-ss&hs=swsV&sca_esv=89f92e0cb398e070&sxsrf=APpeQnvJoNreGsmwSzzhNB968o7XQakllg%3A17882554525" to false,
+            "google.com/search?q=cineby+reddit+&client=ms-android-samsung-ss&hs=D3pV&sca_esv=74ed7c7b1c9c0609&sxsrf=APpeQntT2Y47afPxNY6LdEA-FQctYgMkcA%3A1787587126759&ei=Nmq" to false,
+            "google.com/search?client=ms-android-samsung-ss&hs=cQnV&sca_esv=6af75f4555e6214a&sxsrf=APpeQnug-5fyFPuF_0ZtBeyIemhX6ObLMg:1786982270329&udm=2&fbs=ABfTbFXmzBGw9LE" to false,
+            // ...while a genuine hit in the same shape must still fire. "+" is an encoded space,
+            // so it still welds, which is what keeps this one blocked.
+            "google.com/search?q=10+on+1+gang+bang&oq=10+on+1+gang+bang&gs_lcrp=EgZjaHJvbWUyBggAEEUYOdIBCDQzMjZqMGo3qAIAsAIB&client=ms-android-samsung-ss&sourceid=chrome-mob" to true
         )
         val bad = cases.filter { hit(it.first) != it.second }
         return if (bad.isEmpty()) "Filter self-test: ${cases.size}/${cases.size} pass"
@@ -520,6 +547,13 @@ class Watchdog : AccessibilityService() {
             for (n in root.findAccessibilityNodeInfosByViewId(id).orEmpty()) {
                 val url = n.text?.toString() ?: continue
                 Filter.match(url)?.let { block(url, it); return }
+                // The film layer, for titles the word list cannot judge by spelling. Only on the
+                // address bar, never on TYPE_VIEW_TEXT_CHANGED: typing "titanic" would otherwise
+                // be seven separate lookups instead of one. Cached answers return here inline;
+                // anything unknown resolves on a background thread and blocks when it lands.
+                Movies.check(this, url) { reason ->
+                    ui.post { if (overlay == null) block(url, reason) }
+                }?.let { block(url, it); return }
             }
         }
     }

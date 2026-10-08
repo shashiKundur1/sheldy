@@ -14,6 +14,14 @@ val geminiKey: String = runCatching {
     }.getProperty("gemini.key", "")
 }.getOrDefault("")
 
+// DoesTheDogDie key, same rules as above: local.properties as ddd.key=ddd_..., or paste one in
+// Settings on the phone. Only the film content check needs it; the word filter works without.
+val dddKey: String = runCatching {
+    Properties().apply {
+        rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+    }.getProperty("ddd.key", "")
+}.getOrDefault("")
+
 android {
     namespace = "com.shashi.shield"
     compileSdk = 35
@@ -28,6 +36,7 @@ android {
         // carrying the other three would triple the APK for code that can never run on it.
         ndk { abiFilters.add("arm64-v8a") }
         buildConfigField("String", "GEMINI_KEY", "\"$geminiKey\"")
+        buildConfigField("String", "DDD_KEY", "\"$dddKey\"")
     }
 
     buildFeatures { buildConfig = true }
