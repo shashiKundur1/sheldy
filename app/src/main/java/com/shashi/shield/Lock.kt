@@ -328,7 +328,7 @@ object Lock {
     fun apply(ctx: Context): Int {
         val dpm = ctx.getSystemService(DevicePolicyManager::class.java)
         val admin = ComponentName(ctx, AdminReceiver::class.java)
-        if (!dpm.isDeviceOwnerApp(ctx.packageName)) return 0
+        if (Lockdown.releasing || !dpm.isDeviceOwnerApp(ctx.packageName)) return 0
 
         val on = active(ctx)
         val keep = untouchable(ctx) + allowed(ctx)

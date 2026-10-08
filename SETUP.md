@@ -111,12 +111,15 @@ Biggest hole on this device. Settings , Security and privacy , look for **Secure
 
 ## Escape hatch
 
-`adb shell dpm remove-active-admin com.shashi.shield/.AdminReceiver`, or the **Release everything**
-button in the app.
+`adb shell am broadcast -n com.shashi.shield/.ReleaseReceiver`. It clears every restriction,
+unhides and unsuspends every app, resets Private DNS, hands Device Owner back, and prints what it
+did. Add `--ez keep_owner true` to do all of that but stay Device Owner, as a dry run.
 
-Keep both until the setup is proven stable. Then delete the Release button, rebuild, and give the
-adb command to the person holding you accountable. A lock you can open in 15 seconds at 1am is
-a suggestion, not a lock.
+`adb shell dpm remove-active-admin` is **not** an exit. Android refuses it unless the build was
+`android:testOnly` when it became admin, and this one is not.
+
+Give the adb command to the person holding you accountable. A lock you can open in 15 seconds at
+1am is a suggestion, not a lock.
 
 ## Not covered by Phase 1
 
@@ -173,7 +176,7 @@ in source for a genuine emergency, but nothing in the interface reaches it.
 The remaining exits, both intentionally slow:
 
 ```sh
-adb shell dpm remove-active-admin com.shashi.shield/.AdminReceiver
+adb shell am broadcast -n com.shashi.shield/.ReleaseReceiver
 ```
 
 or a recovery-mode wipe (hardware keys), which no Android app can block.

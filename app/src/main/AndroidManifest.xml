@@ -9,6 +9,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Only for Lockdown.release(). What is hidden or suspended has to be read back from the
+         device before ownership is handed back, and a hidden package is invisible to the scoped
+         queries below. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <!-- Package visibility. Without this, Android 11+ filters other apps out of
          queryIntentActivities and both the browser sweep and the phone lock see an empty list, which fails silently, because an empty list is not an error. It cost a full test cycle
@@ -133,6 +137,14 @@
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
             </intent-filter>
         </receiver>
+
+        <!-- The adb exit. DUMP is held by the shell and nothing on the phone can grant it to
+             itself, so only adb can fire this:
+             adb shell am broadcast -n com.shashi.shield/.ReleaseReceiver -->
+        <receiver
+            android:name=".ReleaseReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
 
         <service
             android:name=".Watchdog"

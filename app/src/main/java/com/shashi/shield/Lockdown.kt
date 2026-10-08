@@ -2,17 +2,50 @@ package com.shashi.shield
 
 import android.app.admin.DeviceAdminReceiver
 import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.UserManager
 import android.provider.Settings
+import android.util.Log
 
 class AdminReceiver : DeviceAdminReceiver()
 
+/**
+ * The adb trigger for [Lockdown.release], and the only exit that works on an ordinary build.
+ *
+ *   adb shell am broadcast -n com.shashi.shield/.ReleaseReceiver
+ *
+ * The manifest gates it on DUMP, which the shell holds and which nothing on the phone can grant
+ * itself, so it stays an adb-only exit. Add `--ez keep_owner true` to lift everything but stay
+ * Device Owner, which is how to check the result while it can still be corrected.
+ */
+class ReleaseReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        val pending = goAsync()
+        val keepOwner = intent.getBooleanExtra("keep_owner", false)
+        Thread {
+            val out = runCatching { Lockdown.release(ctx.applicationContext, keepOwner) }
+                .getOrElse { "Release failed: $it" }
+            Log.i("ShieldRelease", out)
+            pending.resultData = out   // `am broadcast` prints this
+            pending.finish()
+        }.start()
+    }
+}
+
 object Lockdown {
+
+    /**
+     * Set the moment a release starts and never cleared. The watchdog re-hides browsers and
+     * re-applies locks every minute, and without this it would undo a release halfway through.
+     */
+    @Volatile var releasing = false
 
     /**
      * Encrypted DNS (DoT). This is the actual porn filter for anything that resolves a hostname.
@@ -97,10 +130,11 @@ object Lockdown {
      * still be running. A manifest BroadcastReceiver for PACKAGE_ADDED is not reliable under
      * Android 8+ implicit-broadcast limits, and the sweep needs no new moving parts.
      */
+    @Synchronized
     fun sweepBrowsers(ctx: Context): Int {
         val dpm = ctx.getSystemService(DevicePolicyManager::class.java)
         val admin = ComponentName(ctx, AdminReceiver::class.java)
-        if (!dpm.isDeviceOwnerApp(ctx.packageName)) return 0
+        if (releasing || !dpm.isDeviceOwnerApp(ctx.packageName)) return 0
 
         val probe = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com"))
             .addCategory(Intent.CATEGORY_BROWSABLE)
@@ -124,10 +158,11 @@ object Lockdown {
      * the browser outright during the hours your own relapse log points at means there is nothing
      * to type into. Reversed automatically when the window closes.
      */
+    @Synchronized
     fun setBrowserBlackout(ctx: Context, on: Boolean): Boolean {
         val dpm = ctx.getSystemService(DevicePolicyManager::class.java)
         val admin = ComponentName(ctx, AdminReceiver::class.java)
-        if (!dpm.isDeviceOwnerApp(ctx.packageName)) return false
+        if (releasing || !dpm.isDeviceOwnerApp(ctx.packageName)) return false
         return runCatching {
             dpm.setApplicationHidden(admin, ALLOWED_BROWSER, on)
         }.getOrDefault(false)
@@ -296,19 +331,90 @@ object Lockdown {
     }
 
     /**
-     * The escape hatch. Keep this reachable until the setup is proven stable, then move the
-     * trigger behind a code held by someone else.
+     * The escape hatch, reached over adb through [ReleaseReceiver].
+     *
+     * `adb shell dpm remove-active-admin` is NOT an exit. Android refuses it for any admin that
+     * was not android:testOnly when it was activated ("Attempt to remove non-test admin"), so on
+     * an ordinary build ownership can only be handed back from inside the app.
+     *
+     * What to lift is read back from the device, never from the lists above. The sweep hides
+     * whatever can open a link, so HIDE was never the full set, and clearDeviceOwnerApp is
+     * documented as best-effort about what it clears. So everything is lifted first, ownership
+     * goes last, and [keepOwner] stops short of it so the result can be checked from adb.
      */
-    fun release(ctx: Context): String {
-        val dpm = ctx.getSystemService(DevicePolicyManager::class.java)
-        val admin = ComponentName(ctx, AdminReceiver::class.java)
-        if (!dpm.isDeviceOwnerApp(ctx.packageName)) return "Not Device Owner."
+    fun release(ctx: Context, keepOwner: Boolean = false): String {
+        releasing = true   // before the monitor, so a sweep queued behind this one gives up
+        synchronized(this) {
+            val dpm = ctx.getSystemService(DevicePolicyManager::class.java)
+            val admin = ComponentName(ctx, AdminReceiver::class.java)
+            if (!dpm.isDeviceOwnerApp(ctx.packageName)) return "Not Device Owner."
+            val log = StringBuilder()
 
-        for (r in RESTRICTIONS + CLEARED) runCatching { dpm.clearUserRestriction(admin, r) }
-        for (p in HIDE) runCatching { dpm.setApplicationHidden(admin, p, false) }
-        runCatching { dpm.setGlobalPrivateDnsModeOpportunistic(admin) }
-        runCatching { dpm.setUninstallBlocked(admin, ctx.packageName, false) }
-        runCatching { dpm.clearDeviceOwnerApp(ctx.packageName) }
-        return "Released. App is uninstallable again."
+            // Targeting 34+, getUserRestrictions returns only the local ones. Everything in
+            // RESTRICTIONS lands as a global restriction, which needs the second call.
+            val held = runCatching { dpm.getUserRestrictions(admin).keySet() }
+                .getOrDefault(emptySet()) +
+                (if (Build.VERSION.SDK_INT >= 34)
+                    runCatching { dpm.getUserRestrictionsGlobally().keySet() }
+                        .getOrDefault(emptySet())
+                else emptySet())
+            val restrictions =
+                held + RESTRICTIONS + CLEARED + UserManager.DISALLOW_CONFIG_PRIVATE_DNS
+            for (r in restrictions) runCatching { dpm.clearUserRestriction(admin, r) }
+            log.append("restrictions cleared: ${restrictions.size}\n")
+
+            // MATCH_UNINSTALLED_PACKAGES is what makes a hidden package show up here at all.
+            val installed = runCatching {
+                ctx.packageManager.getInstalledApplications(
+                    PackageManager.MATCH_UNINSTALLED_PACKAGES)
+            }.getOrDefault(emptyList())
+
+            val suspended = installed
+                .filter { (it.flags and ApplicationInfo.FLAG_SUSPENDED) != 0 }
+                .map { it.packageName }
+            val notLifted = if (suspended.isEmpty()) emptyList() else runCatching {
+                dpm.setPackagesSuspended(admin, suspended.toTypedArray(), false).toList()
+            }.getOrDefault(suspended)
+            log.append("unsuspended: ${suspended.size - notLifted.size}/${suspended.size}\n")
+
+            fun hidden(p: String) =
+                runCatching { dpm.isApplicationHidden(admin, p) }.getOrDefault(false)
+            val wasHidden = installed.map { it.packageName }.filter { hidden(it) }
+            for (p in (wasHidden + HIDE + ALLOWED_BROWSER).toSet()) {
+                runCatching { dpm.setApplicationHidden(admin, p, false) }
+            }
+            val stillHidden = wasHidden.filter { hidden(it) }
+            log.append("unhidden: ${wasHidden.size - stillHidden.size}/${wasHidden.size}\n")
+            if (stillHidden.isNotEmpty()) log.append("STILL HIDDEN: $stillHidden\n")
+
+            // Same trap as apply(): the DPM call writes nothing on One UI 8, the direct write is
+            // the real path, and it only lands once the restriction above has actually dropped.
+            var mode: String? = null
+            for (attempt in 1..4) {
+                runCatching {
+                    Settings.Global.putString(
+                        ctx.contentResolver, "private_dns_mode", "opportunistic")
+                }.onFailure { runCatching { dpm.setGlobalPrivateDnsModeOpportunistic(admin) } }
+                mode = Settings.Global.getString(ctx.contentResolver, "private_dns_mode")
+                if (mode == "opportunistic") break
+                Thread.sleep(1200)
+            }
+            log.append("private DNS mode: $mode\n")
+
+            runCatching { if (Monochrome.isOn(ctx)) Monochrome.set(ctx, false) }
+            runCatching { dpm.setBackupServiceEnabled(admin, true) }
+            runCatching { dpm.setUninstallBlocked(admin, ctx.packageName, false) }
+
+            if (keepOwner) {
+                return log.append("Still Device Owner. Run again without keep_owner to finish.")
+                    .toString()
+            }
+            runCatching { dpm.clearDeviceOwnerApp(ctx.packageName) }
+            // Read back, not assumed. A refused clear must not report itself as a release.
+            return log.append(
+                if (dpm.isDeviceOwnerApp(ctx.packageName)) "STILL DEVICE OWNER, the clear was refused."
+                else "Released. App is uninstallable again."
+            ).toString()
+        }
     }
 }
